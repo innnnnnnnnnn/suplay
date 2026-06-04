@@ -24,6 +24,14 @@ export default function NasBrowser() {
 
   const VIDEO_EXTENSIONS = [".mp4", ".mkv", ".webm", ".avi", ".mov"];
 
+  useEffect(() => {
+    if (!isTauri) return;
+    const onFsChange = () => setIsFullscreen(!!document.fullscreenElement);
+    document.addEventListener("fullscreenchange", onFsChange);
+    return () => document.removeEventListener("fullscreenchange", onFsChange);
+  }, []);
+
+  // Must return after hooks to satisfy React Rules of Hooks
   if (!isTauri) {
     return (
       <div className="h-full flex flex-col items-center justify-center text-gray-400 bg-[#0a0a0a] p-8 text-center gap-4">
@@ -34,12 +42,6 @@ export default function NasBrowser() {
     );
   }
 
-
-  useEffect(() => {
-    const onFsChange = () => setIsFullscreen(!!document.fullscreenElement);
-    document.addEventListener("fullscreenchange", onFsChange);
-    return () => document.removeEventListener("fullscreenchange", onFsChange);
-  }, []);
 
   const toggleFullscreen = () => {
     if (!document.fullscreenElement) {
