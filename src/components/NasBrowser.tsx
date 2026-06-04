@@ -4,6 +4,8 @@ import { open } from "@tauri-apps/plugin-dialog";
 import { readDir, DirEntry, readTextFile } from "@tauri-apps/plugin-fs";
 import { convertFileSrc } from "@tauri-apps/api/core";
 
+const isTauri = "__TAURI_INTERNALS__" in window;
+
 interface VideoFile {
   name: string;
   path: string;
@@ -21,6 +23,17 @@ export default function NasBrowser() {
   const videoContainerRef = useRef<HTMLDivElement>(null);
 
   const VIDEO_EXTENSIONS = [".mp4", ".mkv", ".webm", ".avi", ".mov"];
+
+  if (!isTauri) {
+    return (
+      <div className="h-full flex flex-col items-center justify-center text-gray-400 bg-[#0a0a0a] p-8 text-center gap-4">
+        <HardDrive size={64} className="opacity-20" />
+        <h2 className="text-2xl font-bold text-white">功能不支援</h2>
+        <p>本地 NAS 瀏覽功能需要存取本機檔案系統，只能在桌面版應用程式中使用。</p>
+      </div>
+    );
+  }
+
 
   useEffect(() => {
     const onFsChange = () => setIsFullscreen(!!document.fullscreenElement);

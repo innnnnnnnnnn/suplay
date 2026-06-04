@@ -2,8 +2,19 @@ import { useEffect, useRef, useState } from "react";
 import Hls from "hls.js";
 import parser from "iptv-playlist-parser";
 import { ListVideo, MonitorPlay, FolderOpen, Maximize2, Minimize2, ChevronLeft } from "lucide-react";
-import { open } from "@tauri-apps/plugin-dialog";
-import { readTextFile } from "@tauri-apps/plugin-fs";
+
+const isTauri = "__TAURI_INTERNALS__" in window;
+
+// Dynamically import Tauri APIs only in Tauri environment
+const openDialog = isTauri
+  ? () => import("@tauri-apps/plugin-dialog").then(m => m.open)
+  : null;
+const readFile = isTauri
+  ? () => import("@tauri-apps/plugin-fs").then(m => m.readTextFile)
+  : null;
+
+// CORS proxy for web mode
+const CORS_PROXY = "https://corsproxy.io/?url=";
 
 export default function IptvPlayer() {
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -53,28 +64,52 @@ export default function IptvPlayer() {
   };
 
   const loadLocalM3u = async () => {
-    try {
-      const selected = await open({
-        multiple: false,
-        filters: [{
-          name: 'M3U Playlist',
-          extensions: ['m3u', 'm3u8']
-        }]
-      });
-      
-      if (selected && typeof selected === 'string') {
-        setLoading(true);
-        const text = await readTextFile(selected);
-        const result = parser.parse(text);
-        setPlaylist(result);
-        setPlaylistUrl(selected);
-        saveToStorage(selected, result);
+    if (isTauri && openDialog && readFile) {
+      // Tauri: use native file dialog
+      try {
+        const openFn = await openDialog();
+        const selected = await openFn({
+          multiple: false,
+          filters: [{ name: 'M3U Playlist', extensions: ['m3u', 'm3u8'] }]
+        });
+        if (selected && typeof selected === 'string') {
+          setLoading(true);
+          const readFn = await readFile();
+          const text = await readFn(selected);
+          const result = parser.parse(text);
+          setPlaylist(result);
+          setPlaylistUrl(selected);
+          saveToStorage(selected, result);
+        }
+      } catch (error) {
+        console.error("Failed to load local playlist", error);
+        alert("載入本地 M3U 檔案失敗！");
+      } finally {
+        setLoading(false);
       }
-    } catch (error) {
-      console.error("Failed to load local playlist", error);
-      alert("載入本地 M3U 檔案失敗！");
-    } finally {
-      setLoading(false);
+    } else {
+      // Web: use HTML file input
+      const input = document.createElement('input');
+      input.type = 'file';
+      input.accept = '.m3u,.m3u8';
+      input.onchange = async (e) => {
+        const file = (e.target as HTMLInputElement).files?.[0];
+        if (!file) return;
+        setLoading(true);
+        try {
+          const text = await file.text();
+          const result = parser.parse(text);
+          setPlaylist(result);
+          setPlaylistUrl(file.name);
+          saveToStorage(file.name, result);
+        } catch (err) {
+          console.error("Failed to parse M3U file", err);
+          alert("M3U 檔案解析失敗！");
+        } finally {
+          setLoading(false);
+        }
+      };
+      input.click();
     }
   };
 
@@ -82,7 +117,9 @@ export default function IptvPlayer() {
     if (!playlistUrl) return;
     setLoading(true);
     try {
-      const response = await fetch(playlistUrl);
+      // In web mode, use CORS proxy to bypass cross-origin restrictions
+      const fetchUrl = isTauri ? playlistUrl : `${CORS_PROXY}${encodeURIComponent(playlistUrl)}`;
+      const response = await fetch(fetchUrl);
       const text = await response.text();
       const result = parser.parse(text);
       setPlaylist(result);

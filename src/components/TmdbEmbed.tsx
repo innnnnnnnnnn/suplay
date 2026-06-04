@@ -1,7 +1,8 @@
 import { useEffect, useState } from "react";
-import { invoke } from "@tauri-apps/api/core";
-import { ArrowLeft, Loader2 } from "lucide-react";
+import { ArrowLeft, Loader2, ExternalLink } from "lucide-react";
 import { getDetails, TMDBItem } from "../api/tmdb";
+
+const isTauri = "__TAURI_INTERNALS__" in window;
 
 interface TmdbEmbedProps {
   url: string;
@@ -15,17 +16,23 @@ export default function TmdbEmbed({ url, onPlay, onClose }: TmdbEmbedProps) {
   const [error, setError] = useState<string>("");
 
   useEffect(() => {
+    if (!isTauri) {
+      // Web mode: cannot fetch TMDB HTML due to X-Frame-Options
+      // Just show a message and open in new tab
+      setLoading(false);
+      return;
+    }
+
     const fetchHtml = async () => {
       setLoading(true);
       setError("");
       try {
-        const rawHtml = await invoke<string>("fetch_tmdb_html", { url });
+        const { invoke: inv } = await import("@tauri-apps/api/core");
+        const rawHtml = await inv<string>("fetch_tmdb_html", { url });
         
-        // Inject base tag and navigation interceptor script
         const parser = new DOMParser();
         const doc = parser.parseFromString(rawHtml, "text/html");
 
-        // 1. Add base tag to resolve relative assets/links
         let baseTag = doc.querySelector("base");
         if (!baseTag) {
           baseTag = doc.createElement("base");
@@ -33,7 +40,6 @@ export default function TmdbEmbed({ url, onPlay, onClose }: TmdbEmbedProps) {
         }
         baseTag.setAttribute("href", "https://www.themoviedb.org/");
 
-        // 2. Add custom script to intercept clicks
         const script = doc.createElement("script");
         script.textContent = `
           document.addEventListener('click', function(e) {
@@ -41,21 +47,16 @@ export default function TmdbEmbed({ url, onPlay, onClose }: TmdbEmbedProps) {
             if (anchor) {
               const href = anchor.getAttribute('href');
               if (href) {
-                // Parse relative url to absolute using temporary anchor
                 const tempAnchor = document.createElement('a');
                 tempAnchor.href = href;
                 const absHref = tempAnchor.href;
-
                 const movieMatch = absHref.match(/\\/movie\\/(\\d+)/);
                 const tvMatch = absHref.match(/\\/tv\\/(\\d+)/);
-
                 if (movieMatch || tvMatch) {
                   e.preventDefault();
                   e.stopPropagation();
-                  
                   const mediaType = movieMatch ? 'movie' : 'tv';
                   const id = movieMatch ? movieMatch[1] : tvMatch[1];
-                  
                   window.parent.postMessage({
                     type: 'TMDB_NAVIGATE',
                     mediaType: mediaType,
@@ -68,7 +69,6 @@ export default function TmdbEmbed({ url, onPlay, onClose }: TmdbEmbedProps) {
           }, true);
         `;
         doc.body.appendChild(script);
-
         setHtml(doc.documentElement.outerHTML);
       } catch (err) {
         console.error("Failed to load TMDB page", err);
@@ -77,7 +77,6 @@ export default function TmdbEmbed({ url, onPlay, onClose }: TmdbEmbedProps) {
         setLoading(false);
       }
     };
-
     fetchHtml();
   }, [url]);
 
@@ -115,10 +114,10 @@ export default function TmdbEmbed({ url, onPlay, onClose }: TmdbEmbedProps) {
           <ArrowLeft size={20} />
           返回主畫面
         </button>
-        <span className="text-gray-400 text-sm tracking-wide">
-          TMDB 探索模式 - 點擊影片將直接開啟播放器
+        <span className="text-gray-400 text-sm tracking-wide hidden sm:block">
+          {isTauri ? "TMDB 探索模式 - 點擊影片將直接開啟播放器" : "TMDB 探索"}
         </span>
-        <div className="w-20"></div> {/* Spacer to keep title centered */}
+        <div className="w-20"></div>
       </div>
 
       <div className="flex-1 w-full h-full relative mt-1">
@@ -129,7 +128,31 @@ export default function TmdbEmbed({ url, onPlay, onClose }: TmdbEmbedProps) {
           </div>
         )}
 
-        {error ? (
+        {/* Web mode: cannot embed TMDB due to X-Frame-Options */}
+        {!isTauri && !loading && (
+          <div className="absolute inset-0 flex flex-col items-center justify-center gap-6 text-center px-8">
+            <div className="w-20 h-20 rounded-full bg-primary/10 flex items-center justify-center">
+              <ExternalLink size={36} className="text-primary" />
+            </div>
+            <h2 className="text-2xl font-bold text-white">在瀏覽器中開啟 TMDB</h2>
+            <p className="text-gray-400 max-w-sm leading-relaxed">
+              網頁版無法嵌入 TMDB 頁面（受 TMDB 安全政策限制），請點擊下方按鈕在新視窗中開啟瀏覽。
+            </p>
+            <a
+              href={url}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="flex items-center gap-2 bg-primary hover:bg-blue-600 text-white px-8 py-3 rounded-full font-bold transition-colors shadow-lg shadow-primary/30"
+            >
+              <ExternalLink size={18} />
+              開啟 TMDB 網站
+            </a>
+            <p className="text-gray-600 text-sm">桌面版 App 支援直接嵌入瀏覽並攔截播放</p>
+          </div>
+        )}
+
+        {/* Tauri mode: embed HTML */}
+        {isTauri && error && (
           <div className="absolute inset-0 flex flex-col items-center justify-center text-red-500 gap-4">
             <p className="text-lg font-semibold">{error}</p>
             <button
@@ -139,14 +162,14 @@ export default function TmdbEmbed({ url, onPlay, onClose }: TmdbEmbedProps) {
               重新整理
             </button>
           </div>
-        ) : (
-          html && (
-            <iframe
-              srcDoc={html}
-              className="w-full h-full border-none bg-white"
-              sandbox="allow-scripts allow-same-origin"
-            ></iframe>
-          )
+        )}
+
+        {isTauri && !error && html && (
+          <iframe
+            srcDoc={html}
+            className="w-full h-full border-none bg-white"
+            sandbox="allow-scripts allow-same-origin"
+          ></iframe>
         )}
       </div>
     </div>
