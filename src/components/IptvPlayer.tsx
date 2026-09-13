@@ -14,10 +14,36 @@ const readFile = isTauri
   ? () => import("@tauri-apps/plugin-fs").then(m => m.readTextFile)
   : null;
 
-// CORS proxy for web mode
-const CORS_PROXY = "https://corsproxy.io/?url=";
+// iptv-org CORS-enabled sources (GitHub raw / GitHub Pages – no proxy needed)
+const IPTV_ORG_COUNTRY = "https://raw.githubusercontent.com/iptv-org/iptv/master/streams";
+// Full index (all channels, grouped by category inside the M3U)
+const IPTV_ORG_INDEX = "https://iptv-org.github.io/iptv/index.m3u";
 
-const IPTV_FREE_BASE = "https://live.iptv-free.com/iptv/categories";
+// CORS proxy list for custom user-supplied URLs (tried in order, first success wins)
+const CORS_PROXIES = [
+  (url: string) => `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`,
+  (url: string) => `https://corsproxy.io/?url=${encodeURIComponent(url)}`,
+  (url: string) => `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(url)}`,
+];
+
+/** Fetch a URL with automatic CORS-proxy fallback. */
+const fetchWithProxy = async (url: string): Promise<string> => {
+  // 1. Try direct (works if server sends Access-Control-Allow-Origin: *)
+  try {
+    const res = await fetch(url);
+    if (res.ok) return res.text();
+  } catch { /* fall through */ }
+
+  // 2. Try each proxy in order
+  for (const proxyFn of CORS_PROXIES) {
+    try {
+      const res = await fetch(proxyFn(url));
+      if (res.ok) return res.text();
+    } catch { /* try next */ }
+  }
+
+  throw new Error("所有 CORS proxy 均失敗，請確認網址是否正確。");
+};
 
 interface IptvCategory {
   id: string;
@@ -63,10 +89,12 @@ interface IptvLanguage {
 }
 
 const IPTV_LANGUAGES: IptvLanguage[] = [
-  { code: "zho", name: "中文", emoji: "🇨🇳" },
-  { code: "jpn", name: "日本語", emoji: "🇯🇵" },
-  { code: "kor", name: "한국어", emoji: "🇰🇷" },
-  { code: "eng", name: "English", emoji: "🇬🇧" },
+  { code: "tw", name: "台灣", emoji: "🇹🇼" },
+  { code: "cn", name: "中國", emoji: "🇨🇳" },
+  { code: "jp", name: "日本", emoji: "🇯🇵" },
+  { code: "kr", name: "韓國", emoji: "🇰🇷" },
+  { code: "us", name: "美國", emoji: "🇺🇸" },
+  { code: "gb", name: "英國", emoji: "🇬🇧" },
 ];
 
 export default function IptvPlayer() {
@@ -204,16 +232,16 @@ export default function IptvPlayer() {
         // Use Rust backend with 8.8.8.8 DNS to bypass CORS and DNS pollution
         text = await invoke<string>("fetch_m3u", { url });
       } else {
-        const fetchUrl = `${CORS_PROXY}${encodeURIComponent(url)}`;
-        const response = await fetch(fetchUrl);
-        text = await response.text();
+        // fetchWithProxy tries direct first, then multiple CORS proxies
+        text = await fetchWithProxy(url);
       }
       const result = parser.parse(text);
       setPlaylist(result);
       saveToStorage(url, result);
     } catch (error) {
       console.error("Failed to load playlist", error);
-      alert("載入播放清單失敗，請確認網址或 CORS 設定。");
+      const msg = error instanceof Error ? error.message : String(error);
+      alert(`載入播放清單失敗：${msg}`);
     } finally {
       setLoading(false);
     }
@@ -221,12 +249,45 @@ export default function IptvPlayer() {
 
   const loadCategory = (cat: IptvCategory) => {
     setCategoryOpen(false);
-    loadPlaylistUrl(`${IPTV_FREE_BASE}/${cat.id.toLowerCase()}.m3u`);
+    // Use the full iptv-org index and filter by group-title client-side,
+    // because iptv-org doesn't have per-category M3U endpoints.
+    // We load the full index once and filter the matching category.
+    loadPlaylistUrlFiltered(IPTV_ORG_INDEX, cat.name);
   };
 
   const loadLanguage = (lang: IptvLanguage) => {
     setLanguageOpen(false);
-    loadPlaylistUrl(`https://live.iptv-free.com/iptv/languages/${lang.code}.m3u`);
+    // iptv-org country streams are CORS-enabled on raw.githubusercontent.com
+    loadPlaylistUrl(`${IPTV_ORG_COUNTRY}/${lang.code}.m3u`);
+  };
+
+  /** Load a playlist URL and then filter channels by group-title (case-insensitive). */
+  const loadPlaylistUrlFiltered = async (url: string, groupFilter: string) => {
+    setPlaylistUrl(url);
+    setLoading(true);
+    try {
+      let text: string;
+      if (isTauri) {
+        text = await invoke<string>("fetch_m3u", { url });
+      } else {
+        text = await fetchWithProxy(url);
+      }
+      const result = parser.parse(text);
+      const filtered = {
+        ...result,
+        items: result.items.filter((item: any) =>
+          item.group?.title?.toLowerCase().includes(groupFilter.toLowerCase())
+        ),
+      };
+      setPlaylist(filtered);
+      saveToStorage(url, filtered);
+    } catch (error) {
+      console.error("Failed to load playlist", error);
+      const msg = error instanceof Error ? error.message : String(error);
+      alert(`載入播放清單失敗：${msg}`);
+    } finally {
+      setLoading(false);
+    }
   };
 
   const playChannel = (channel: any) => {
