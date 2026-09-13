@@ -26,3 +26,4 @@ reqwest = { version = "0.12", features = ["json", "blocking"] }
 scraper = "0.19"
 tauri-plugin-dialog = "2.7.1"
 tauri-plugin-fs = "2.5.1"
+trust-dns-resolver = "0.23.2"

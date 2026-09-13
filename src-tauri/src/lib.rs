@@ -16,7 +16,10 @@ pub fn run() {
             scraper::scrape_movieffm_home,
             scraper::search_movieffm_query,
             scraper::get_movieffm_iframe,
-            scraper::fetch_tmdb_html
+            scraper::fetch_tmdb_html,
+            scraper::get_iptv_categories,
+            scraper::get_iptv_languages,
+            scraper::fetch_m3u
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -1,6 +1,11 @@
 use reqwest;
 use scraper::{Html, Selector};
 use serde::{Deserialize, Serialize};
+use reqwest::dns::{Name, Resolve, Resolving};
+use std::net::SocketAddr;
+use std::sync::Arc;
+use trust_dns_resolver::config::{ResolverConfig, ResolverOpts};
+use trust_dns_resolver::TokioAsyncResolver;
 
 #[derive(Serialize, Deserialize, Debug)]
 pub struct ScrapedVideo {
@@ -11,12 +16,41 @@ pub struct ScrapedVideo {
     pub year: String,
 }
 
+struct Dns8888Resolver {
+    resolver: Arc<TokioAsyncResolver>,
+}
+
+impl Dns8888Resolver {
+    fn new() -> Self {
+        let resolver = TokioAsyncResolver::tokio(ResolverConfig::google(), ResolverOpts::default());
+        Self { resolver: Arc::new(resolver) }
+    }
+}
+
+impl Resolve for Dns8888Resolver {
+    fn resolve(&self, name: Name) -> Resolving {
+        let resolver = self.resolver.clone();
+        Box::pin(async move {
+            let response = resolver.lookup_ip(name.as_str()).await?;
+            let addrs: Box<dyn Iterator<Item = SocketAddr> + Send> = Box::new(
+                response.into_iter().map(|ip| SocketAddr::new(ip, 0))
+            );
+            Ok(addrs)
+        })
+    }
+}
+
+fn get_client() -> Result<reqwest::Client, String> {
+    reqwest::Client::builder()
+        .user_agent("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+        .dns_resolver(Arc::new(Dns8888Resolver::new()))
+        .build()
+        .map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 pub async fn scrape_movieffm_home() -> Result<Vec<ScrapedVideo>, String> {
-    let client = reqwest::Client::builder()
-        .user_agent("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
-        .build()
-        .map_err(|e| e.to_string())?;
+    let client = get_client()?;
 
     let res = client.get("https://www.movieffm.net/")
         .send()
@@ -58,10 +92,7 @@ pub async fn scrape_movieffm_home() -> Result<Vec<ScrapedVideo>, String> {
 
 #[tauri::command]
 pub async fn search_movieffm_query(query: String) -> Result<Vec<ScrapedVideo>, String> {
-    let client = reqwest::Client::builder()
-        .user_agent("Mozilla/5.0")
-        .build()
-        .map_err(|e| e.to_string())?;
+    let client = get_client()?;
 
     let res = client.get(format!("https://www.movieffm.net/xssearch?q={}", query))
         .send()
@@ -102,10 +133,7 @@ pub async fn search_movieffm_query(query: String) -> Result<Vec<ScrapedVideo>, S
 
 #[tauri::command]
 pub async fn get_movieffm_iframe(url: String) -> Result<String, String> {
-    let client = reqwest::Client::builder()
-        .user_agent("Mozilla/5.0")
-        .build()
-        .map_err(|e| e.to_string())?;
+    let client = get_client()?;
 
     let res = client.get(&url)
         .send()
@@ -137,10 +165,7 @@ pub async fn get_movieffm_iframe(url: String) -> Result<String, String> {
 
 #[tauri::command]
 pub async fn fetch_tmdb_html(url: String) -> Result<String, String> {
-    let client = reqwest::Client::builder()
-        .user_agent("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
-        .build()
-        .map_err(|e| e.to_string())?;
+    let client = get_client()?;
 
     // Add ?language=zh-TW to URL if not already present
     let final_url = if url.contains("language=") {
@@ -162,3 +187,52 @@ pub async fn fetch_tmdb_html(url: String) -> Result<String, String> {
     Ok(html)
 }
 
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct IptvCategory {
+    pub id: String,
+    pub name: String,
+    pub description: Option<String>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct IptvLanguage {
+    pub code: String,
+    pub name: String,
+}
+
+#[tauri::command]
+pub async fn get_iptv_categories() -> Result<Vec<IptvCategory>, String> {
+    let client = get_client()?;
+    let res = client.get("https://iptv-org.github.io/api/categories.json")
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+
+    let categories: Vec<IptvCategory> = res.json().await.map_err(|e| e.to_string())?;
+    Ok(categories)
+}
+
+#[tauri::command]
+pub async fn get_iptv_languages() -> Result<Vec<IptvLanguage>, String> {
+    let client = get_client()?;
+    let res = client.get("https://iptv-org.github.io/api/languages.json")
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+
+    let languages: Vec<IptvLanguage> = res.json().await.map_err(|e| e.to_string())?;
+    Ok(languages)
+}
+
+#[tauri::command]
+pub async fn fetch_m3u(url: String) -> Result<String, String> {
+    let client = get_client()?;
+    let res = client.get(&url)
+        .header("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+
+    let text = res.text().await.map_err(|e| e.to_string())?;
+    Ok(text)
+}
