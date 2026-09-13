@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import Hls from "hls.js";
 import parser from "iptv-playlist-parser";
-import { ListVideo, MonitorPlay, FolderOpen, Maximize2, Minimize2, ChevronLeft, Heart, Search, ChevronDown } from "lucide-react";
+import { ListVideo, MonitorPlay, FolderOpen, Maximize2, Minimize2, ChevronLeft, Heart, Search, ChevronDown, AlertCircle } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
 
 const isTauri = "__TAURI_INTERNALS__" in window;
@@ -14,10 +14,15 @@ const readFile = isTauri
   ? () => import("@tauri-apps/plugin-fs").then(m => m.readTextFile)
   : null;
 
-// CORS proxy for web mode
-const CORS_PROXY = "https://corsproxy.io/?url=";
+// iptv-org.github.io is hosted on GitHub Pages → has CORS headers → no proxy needed
+const IPTV_ORG_BASE = "https://iptv-org.github.io/iptv";
 
-const IPTV_FREE_BASE = "https://live.iptv-free.com/iptv/categories";
+// CORS proxies to try for user-provided URLs (fallback chain)
+const CORS_PROXIES = [
+  (url: string) => `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`,
+  (url: string) => `https://corsproxy.io/?url=${encodeURIComponent(url)}`,
+  (url: string) => `https://thingproxy.freeboard.io/fetch/${url}`,
+];
 
 interface IptvCategory {
   id: string;
@@ -25,35 +30,35 @@ interface IptvCategory {
   emoji: string;
 }
 
-// Hardcoded categories from iptv-free.com
+// Categories matching iptv-org format (id is used as URL segment)
 const IPTV_CATEGORIES: IptvCategory[] = [
-  { id: "General", name: "General", emoji: "🌐" },
-  { id: "News", name: "News", emoji: "📰" },
-  { id: "Movies", name: "Movies", emoji: "🎬" },
-  { id: "Religious", name: "Religious", emoji: "🕍" },
-  { id: "Music", name: "Music", emoji: "🎶" },
-  { id: "Entertainment", name: "Entertainment", emoji: "📺" },
-  { id: "Sports", name: "Sports", emoji: "🏀" },
-  { id: "Kids", name: "Kids", emoji: "👶" },
-  { id: "Series", name: "Series", emoji: "📺" },
-  { id: "Legislative", name: "Legislative", emoji: "🏛️" },
-  { id: "Culture", name: "Culture", emoji: "🎨" },
-  { id: "Education", name: "Education", emoji: "🎓" },
-  { id: "Documentary", name: "Documentary", emoji: "📽️" },
-  { id: "Lifestyle", name: "Lifestyle", emoji: "👗" },
-  { id: "Shop", name: "Shop", emoji: "🛍️" },
-  { id: "Comedy", name: "Comedy", emoji: "😂" },
-  { id: "Business", name: "Business", emoji: "📊" },
-  { id: "Animation", name: "Animation", emoji: "🎬" },
-  { id: "Family", name: "Family", emoji: "👨‍👩‍👧‍👦" },
-  { id: "Classic", name: "Classic", emoji: "📻" },
-  { id: "Travel", name: "Travel", emoji: "✈️" },
-  { id: "Outdoor", name: "Outdoor", emoji: "🌲" },
-  { id: "Cooking", name: "Cooking", emoji: "🍳" },
-  { id: "Science", name: "Science", emoji: "🔬" },
-  { id: "Auto", name: "Auto", emoji: "🚗" },
-  { id: "Weather", name: "Weather", emoji: "🌤️" },
-  { id: "Relax", name: "Relax", emoji: "🧘" },
+  { id: "general", name: "General", emoji: "🌐" },
+  { id: "news", name: "News", emoji: "📰" },
+  { id: "movies", name: "Movies", emoji: "🎬" },
+  { id: "religious", name: "Religious", emoji: "🕍" },
+  { id: "music", name: "Music", emoji: "🎶" },
+  { id: "entertainment", name: "Entertainment", emoji: "📺" },
+  { id: "sports", name: "Sports", emoji: "🏀" },
+  { id: "kids", name: "Kids", emoji: "👶" },
+  { id: "series", name: "Series", emoji: "🎞️" },
+  { id: "legislative", name: "Legislative", emoji: "🏛️" },
+  { id: "culture", name: "Culture", emoji: "🎨" },
+  { id: "education", name: "Education", emoji: "🎓" },
+  { id: "documentary", name: "Documentary", emoji: "📽️" },
+  { id: "lifestyle", name: "Lifestyle", emoji: "👗" },
+  { id: "shop", name: "Shop", emoji: "🛍️" },
+  { id: "comedy", name: "Comedy", emoji: "😂" },
+  { id: "business", name: "Business", emoji: "📊" },
+  { id: "animation", name: "Animation", emoji: "✨" },
+  { id: "family", name: "Family", emoji: "👨‍👩‍👧‍👦" },
+  { id: "classic", name: "Classic", emoji: "📻" },
+  { id: "travel", name: "Travel", emoji: "✈️" },
+  { id: "outdoor", name: "Outdoor", emoji: "🌲" },
+  { id: "cooking", name: "Cooking", emoji: "🍳" },
+  { id: "science", name: "Science", emoji: "🔬" },
+  { id: "auto", name: "Auto", emoji: "🚗" },
+  { id: "weather", name: "Weather", emoji: "🌤️" },
+  { id: "relax", name: "Relax", emoji: "🧘" },
 ];
 
 interface IptvLanguage {
@@ -67,20 +72,65 @@ const IPTV_LANGUAGES: IptvLanguage[] = [
   { code: "jpn", name: "日本語", emoji: "🇯🇵" },
   { code: "kor", name: "한국어", emoji: "🇰🇷" },
   { code: "eng", name: "English", emoji: "🇬🇧" },
+  { code: "fra", name: "Français", emoji: "🇫🇷" },
+  { code: "deu", name: "Deutsch", emoji: "🇩🇪" },
+  { code: "spa", name: "Español", emoji: "🇪🇸" },
+  { code: "por", name: "Português", emoji: "🇵🇹" },
+  { code: "ara", name: "العربية", emoji: "🇸🇦" },
+  { code: "tha", name: "ภาษาไทย", emoji: "🇹🇭" },
 ];
+
+/**
+ * Fetch M3U content in web mode.
+ * Strategy:
+ *  1. Try direct fetch (some M3U servers allow CORS)
+ *  2. Try each CORS proxy in order, validate response contains #EXTM3U
+ */
+async function fetchWithCorsProxy(url: string): Promise<string> {
+  // 1. Try direct fetch first
+  try {
+    const res = await fetch(url, { signal: AbortSignal.timeout(8000) });
+    if (res.ok) {
+      const text = await res.text();
+      if (text.includes("#EXTM3U") || text.includes("#EXTINF")) return text;
+    }
+  } catch {
+    // CORS blocked or network error — fall through to proxies
+  }
+
+  // 2. Try each CORS proxy
+  for (const makeProxy of CORS_PROXIES) {
+    try {
+      const proxyUrl = makeProxy(url);
+      const res = await fetch(proxyUrl, { signal: AbortSignal.timeout(12000) });
+      if (res.ok) {
+        const text = await res.text();
+        // Validate it's actually an M3U file
+        if (text.includes("#EXTM3U") || text.includes("#EXTINF")) {
+          return text;
+        }
+      }
+    } catch {
+      // Try next proxy
+    }
+  }
+
+  throw new Error("所有 CORS Proxy 嘗試均失敗，請確認網址是否正確或稍後再試。");
+}
 
 export default function IptvPlayer() {
   const videoRef = useRef<HTMLVideoElement>(null);
+  const hlsRef = useRef<Hls | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const [playlist, setPlaylist] = useState<any>(null);
   const [currentChannel, setCurrentChannel] = useState<any>(null);
   const [playlistUrl, setPlaylistUrl] = useState("");
   const [loading, setLoading] = useState(false);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [isPlaying, setIsPlaying] = useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
 
-  // New states
   const [searchQuery, setSearchQuery] = useState("");
   const [favorites, setFavorites] = useState<any[]>([]);
   const [activeTab, setActiveTab] = useState<"all" | "fav">("all");
@@ -156,6 +206,7 @@ export default function IptvPlayer() {
         });
         if (selected && typeof selected === 'string') {
           setLoading(true);
+          setLoadError(null);
           const readFn = await readFile();
           const text = await readFn(selected);
           const result = parser.parse(text);
@@ -165,7 +216,7 @@ export default function IptvPlayer() {
         }
       } catch (error) {
         console.error("Failed to load local playlist", error);
-        alert("載入本地 M3U 檔案失敗！");
+        setLoadError("載入本地 M3U 檔案失敗！");
       } finally {
         setLoading(false);
       }
@@ -177,6 +228,7 @@ export default function IptvPlayer() {
         const file = (e.target as HTMLInputElement).files?.[0];
         if (!file) return;
         setLoading(true);
+        setLoadError(null);
         try {
           const text = await file.text();
           const result = parser.parse(text);
@@ -185,7 +237,7 @@ export default function IptvPlayer() {
           saveToStorage(file.name, result);
         } catch (err) {
           console.error("Failed to parse M3U file", err);
-          alert("M3U 檔案解析失敗！");
+          setLoadError("M3U 檔案解析失敗！");
         } finally {
           setLoading(false);
         }
@@ -198,65 +250,101 @@ export default function IptvPlayer() {
     if (!url) return;
     setPlaylistUrl(url);
     setLoading(true);
+    setLoadError(null);
     try {
       let text: string;
       if (isTauri) {
         // Use Rust backend with 8.8.8.8 DNS to bypass CORS and DNS pollution
         text = await invoke<string>("fetch_m3u", { url });
       } else {
-        const fetchUrl = `${CORS_PROXY}${encodeURIComponent(url)}`;
-        const response = await fetch(fetchUrl);
-        text = await response.text();
+        // Web mode: try direct fetch first, then proxy fallback chain
+        text = await fetchWithCorsProxy(url);
       }
       const result = parser.parse(text);
+      if (!result.items || result.items.length === 0) {
+        setLoadError("清單解析成功但找不到頻道，請確認 M3U 格式是否正確。");
+      }
       setPlaylist(result);
       saveToStorage(url, result);
-    } catch (error) {
+    } catch (error: any) {
       console.error("Failed to load playlist", error);
-      alert("載入播放清單失敗，請確認網址或 CORS 設定。");
+      setLoadError(error?.message || "載入播放清單失敗，請確認網址或網路設定。");
     } finally {
       setLoading(false);
     }
   };
 
+  // Use iptv-org.github.io — GitHub Pages supports CORS, no proxy needed
   const loadCategory = (cat: IptvCategory) => {
     setCategoryOpen(false);
-    loadPlaylistUrl(`${IPTV_FREE_BASE}/${cat.id.toLowerCase()}.m3u`);
+    loadPlaylistUrl(`${IPTV_ORG_BASE}/index.category.${cat.id}.m3u`);
   };
 
   const loadLanguage = (lang: IptvLanguage) => {
     setLanguageOpen(false);
-    loadPlaylistUrl(`https://live.iptv-free.com/iptv/languages/${lang.code}.m3u`);
+    loadPlaylistUrl(`${IPTV_ORG_BASE}/index.language.${lang.code}.m3u`);
   };
 
   const playChannel = (channel: any) => {
     setCurrentChannel(channel);
-    if (videoRef.current) {
-      if (Hls.isSupported()) {
-        const hls = new Hls();
-        hls.loadSource(channel.url);
-        hls.attachMedia(videoRef.current);
-        hls.on(Hls.Events.MANIFEST_PARSED, () => {
-          videoRef.current?.play();
-          setIsPlaying(true);
-        });
-      } else if (videoRef.current.canPlayType("application/vnd.apple.mpegurl")) {
-        videoRef.current.src = channel.url;
-        videoRef.current.addEventListener("loadedmetadata", () => {
-          videoRef.current?.play();
-          setIsPlaying(true);
-        });
-      }
+
+    // Destroy previous HLS instance
+    if (hlsRef.current) {
+      hlsRef.current.destroy();
+      hlsRef.current = null;
+    }
+
+    if (!videoRef.current) return;
+
+    const url: string = channel.url;
+
+    if (Hls.isSupported()) {
+      const hls = new Hls({
+        enableWorker: true,
+        lowLatencyMode: true,
+      });
+      hlsRef.current = hls;
+      hls.loadSource(url);
+      hls.attachMedia(videoRef.current);
+      hls.on(Hls.Events.MANIFEST_PARSED, () => {
+        videoRef.current?.play().catch(() => {});
+        setIsPlaying(true);
+      });
+      hls.on(Hls.Events.ERROR, (_evt, data) => {
+        if (data.fatal) {
+          console.error("HLS fatal error", data);
+        }
+      });
+    } else if (videoRef.current.canPlayType("application/vnd.apple.mpegurl")) {
+      // Safari native HLS
+      videoRef.current.src = url;
+      videoRef.current.addEventListener("loadedmetadata", () => {
+        videoRef.current?.play().catch(() => {});
+        setIsPlaying(true);
+      }, { once: true });
+    } else {
+      // Fallback: direct src
+      videoRef.current.src = url;
+      videoRef.current.load();
+      videoRef.current.play().catch(() => {});
+      setIsPlaying(true);
     }
   };
+
+  // Cleanup HLS on unmount
+  useEffect(() => {
+    return () => {
+      hlsRef.current?.destroy();
+    };
+  }, []);
 
   const getFilteredItems = () => {
     let items = activeTab === "fav" ? favorites : playlist?.items || [];
     if (searchQuery) {
       const q = searchQuery.toLowerCase();
-      items = items.filter((item: any) => 
-        (item.name && item.name.toLowerCase().includes(q)) || 
-        (item.group.title && item.group.title.toLowerCase().includes(q))
+      items = items.filter((item: any) =>
+        (item.name && item.name.toLowerCase().includes(q)) ||
+        (item.group?.title && item.group.title.toLowerCase().includes(q))
       );
     }
     return items;
@@ -273,7 +361,7 @@ export default function IptvPlayer() {
         />
       )}
 
-      <div 
+      <div
         className={`
           flex flex-col bg-gray-900/50 border-r border-gray-800 transition-all duration-300 ease-in-out shrink-0
           ${sidebarCollapsed ? "w-0 border-r-0 overflow-hidden" : "w-80"}
@@ -293,7 +381,6 @@ export default function IptvPlayer() {
               <ChevronLeft size={18} />
             </button>
           </div>
-
 
           {/* Category Quick-Select Panel */}
           <div className="relative">
@@ -353,6 +440,7 @@ export default function IptvPlayer() {
               className="flex-1 bg-gray-800 border border-gray-700 rounded px-3 py-2 text-sm focus:outline-none focus:border-primary transition-colors"
               value={playlistUrl}
               onChange={(e) => setPlaylistUrl(e.target.value)}
+              onKeyDown={(e) => e.key === "Enter" && loadPlaylistUrl(playlistUrl)}
             />
             <button
               onClick={loadLocalM3u}
@@ -370,6 +458,14 @@ export default function IptvPlayer() {
               載入
             </button>
           </div>
+
+          {/* Error Banner */}
+          {loadError && (
+            <div className="flex items-start gap-2 bg-red-950/60 border border-red-800 rounded px-3 py-2 text-xs text-red-300">
+              <AlertCircle size={14} className="mt-0.5 shrink-0" />
+              <span>{loadError}</span>
+            </div>
+          )}
 
           {/* Search */}
           <div className="relative">
@@ -389,13 +485,13 @@ export default function IptvPlayer() {
               className={`flex-1 py-1 text-sm rounded ${activeTab === "all" ? "bg-gray-700 text-white" : "text-gray-400 hover:text-gray-200"}`}
               onClick={() => setActiveTab("all")}
             >
-              所有頻道
+              所有頻道 {playlist?.items?.length ? `(${playlist.items.length})` : ""}
             </button>
             <button
               className={`flex-1 py-1 text-sm rounded ${activeTab === "fav" ? "bg-gray-700 text-white" : "text-gray-400 hover:text-gray-200"}`}
               onClick={() => setActiveTab("fav")}
             >
-              最愛頻道
+              最愛頻道 {favorites.length > 0 ? `(${favorites.length})` : ""}
             </button>
           </div>
         </div>
@@ -411,8 +507,8 @@ export default function IptvPlayer() {
                   currentChannel?.url === item.url ? "bg-gray-800/80 border-l-2 border-l-primary" : ""
                 }`}
               >
-                {item.tvg.logo ? (
-                  <img src={item.tvg.logo} alt={item.name} className="w-10 h-10 object-contain rounded bg-gray-900 p-1 shrink-0" />
+                {item.tvg?.logo ? (
+                  <img src={item.tvg.logo} alt={item.name} className="w-10 h-10 object-contain rounded bg-gray-900 p-1 shrink-0" onError={(e) => { (e.target as HTMLImageElement).style.display = 'none'; }} />
                 ) : (
                   <div className="w-10 h-10 bg-gray-800 rounded flex items-center justify-center shrink-0">
                     <MonitorPlay size={20} className="text-gray-500" />
@@ -420,9 +516,9 @@ export default function IptvPlayer() {
                 )}
                 <div className="flex-1 overflow-hidden">
                   <p className="truncate text-sm font-medium">{item.name}</p>
-                  <p className="truncate text-xs text-gray-500">{item.group.title || "未分類"}</p>
+                  <p className="truncate text-xs text-gray-500">{item.group?.title || "未分類"}</p>
                 </div>
-                <button 
+                <button
                   onClick={(e) => toggleFavorite(e, item)}
                   className={`p-1.5 rounded-full hover:bg-gray-700 transition-colors shrink-0 ${isFav ? "text-red-500" : "text-gray-600 hover:text-gray-400"}`}
                 >
@@ -433,16 +529,17 @@ export default function IptvPlayer() {
           })}
           {displayItems.length === 0 && !loading && (
             <div className="p-8 text-center text-gray-500 text-sm">
-              {activeTab === "fav" 
-                ? "尚無最愛頻道" 
-                : searchQuery 
-                  ? "找不到符合的頻道" 
+              {activeTab === "fav"
+                ? "尚無最愛頻道"
+                : searchQuery
+                  ? "找不到符合的頻道"
                   : "請輸入 M3U 網址或選擇分類來載入頻道"}
             </div>
           )}
           {loading && (
-            <div className="p-8 text-center text-gray-500 text-sm">
-              載入中...
+            <div className="p-8 text-center text-gray-500 text-sm flex flex-col items-center gap-3">
+              <div className="w-8 h-8 border-2 border-primary border-t-transparent rounded-full animate-spin" />
+              載入中，請稍候...
             </div>
           )}
         </div>
