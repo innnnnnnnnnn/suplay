@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from "react";
 import { AlertCircle, Loader2, ArrowLeft, Maximize2, Minimize2 } from "lucide-react";
-import { TMDBItem } from "../api/tmdb";
+import { TMDBItem, getImageUrl } from "../api/tmdb";
 
 interface PlayerProps {
   item: TMDBItem;
@@ -35,32 +35,23 @@ export default function Player({ item, onBack }: PlayerProps) {
   const findVideo = async () => {
     setLoading(true);
     setError("");
-    
-    // Check if we're running in Tauri
-    const isTauri = '__TAURI_INTERNALS__' in window;
-    if (!isTauri) {
-      setTimeout(() => {
-        setIframeUrl("https://www.youtube.com/embed/dQw4w9WgXcQ?autoplay=1");
-        setLoading(false);
-      }, 1500);
-      return;
-    }
-    
-    // Movieffm now has strong JS anti-bot challenges (LiteSpeed) blocking Rust HTTP clients.
-    // Instead of scraping in the background, we directly embed the Movieffm search page.
-    // The user can interact with the real site (which auto-solves the challenge) 
-    // and click the movie they want directly. The sandbox protects them from ads.
+
+    // Embed movieffm search page directly — same behaviour as Tauri desktop app.
+    // The sandbox allows scripts/forms so the real site anti-bot JS can run.
     const query = encodeURIComponent(item.title || item.name || "");
     const targetUrl = `https://www.movieffm.net/xssearch?q=${query}`;
-    
+
     setIframeUrl(targetUrl);
     setLoading(false);
   };
 
+  const backdropUrl = getImageUrl(item.backdrop_path || item.poster_path, "w1280");
+
   return (
     <div ref={containerRef} className="absolute inset-0 z-[100] bg-black flex flex-col">
+      {/* ── Top overlay controls ── */}
       <div className="absolute top-0 left-0 right-0 p-4 bg-gradient-to-b from-black/80 to-transparent z-50 flex items-center justify-between gap-4 opacity-0 hover:opacity-100 transition-opacity">
-        <button 
+        <button
           onClick={onBack}
           className="text-white hover:text-primary transition-colors flex items-center gap-2 font-bold"
         >
@@ -77,10 +68,21 @@ export default function Player({ item, onBack }: PlayerProps) {
       </div>
 
       <div className="flex-1 w-full h-full flex flex-col items-center justify-center relative">
+        {/* Loading overlay with backdrop blur */}
         {loading && (
-          <div className="text-primary flex flex-col items-center gap-4">
-            <Loader2 className="animate-spin" size={64} />
-            <p className="text-xl font-bold animate-pulse">{status}</p>
+          <div
+            className="absolute inset-0 flex flex-col items-center justify-center gap-4 z-10"
+            style={{
+              backgroundImage: backdropUrl ? `url(${backdropUrl})` : undefined,
+              backgroundSize: "cover",
+              backgroundPosition: "center",
+            }}
+          >
+            <div className="absolute inset-0 bg-black/70 backdrop-blur-xl" />
+            <Loader2 className="animate-spin text-primary relative z-10" size={64} />
+            <p className="text-xl font-bold animate-pulse text-white relative z-10">
+              正在搜尋《{item.title || item.name}》...
+            </p>
           </div>
         )}
 
@@ -98,7 +100,7 @@ export default function Player({ item, onBack }: PlayerProps) {
             allowFullScreen
             allow="fullscreen; autoplay"
             sandbox="allow-scripts allow-same-origin allow-presentation allow-popups allow-forms"
-          ></iframe>
+          />
         )}
       </div>
     </div>

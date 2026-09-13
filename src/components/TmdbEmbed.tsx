@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
-import { ArrowLeft, Loader2, ExternalLink } from "lucide-react";
-import { getDetails, TMDBItem } from "../api/tmdb";
+import { ArrowLeft, Loader2, Play, Star, Calendar, ExternalLink } from "lucide-react";
+import { getDetails, TMDBItem, getImageUrl, searchMulti } from "../api/tmdb";
 
 const isTauri = "__TAURI_INTERNALS__" in window;
 
@@ -10,26 +10,53 @@ interface TmdbEmbedProps {
   onClose: () => void;
 }
 
+// Fetch a page of popular items from TMDB API to browse (web fallback)
+const fetchTmdbPage = async (url: string): Promise<TMDBItem[]> => {
+  // Parse whether this is a movie or tv URL
+  const isMovie = url.includes("/movie");
+  const isTv = url.includes("/tv");
+
+  const TMDB_API_KEY = "581a8fbd7a7cfeb48d4454fb9c6c697a";
+  const BASE_URL = "https://api.themoviedb.org/3";
+  let endpoint = "/trending/all/day";
+  if (isMovie) endpoint = "/movie/popular";
+  if (isTv) endpoint = "/tv/popular";
+
+  const params = new URLSearchParams({ api_key: TMDB_API_KEY, language: "zh-TW", page: "1" });
+  const res = await fetch(`${BASE_URL}${endpoint}?${params}`);
+  if (!res.ok) throw new Error("TMDB fetch failed");
+  const data = await res.json();
+  return data.results as TMDBItem[];
+};
+
 export default function TmdbEmbed({ url, onPlay, onClose }: TmdbEmbedProps) {
   const [html, setHtml] = useState<string>("");
   const [loading, setLoading] = useState<boolean>(true);
   const [error, setError] = useState<string>("");
 
+  // Web-mode browse state
+  const [browseItems, setBrowseItems] = useState<TMDBItem[]>([]);
+  const [searchQuery, setSearchQuery] = useState("");
+  const [searchResults, setSearchResults] = useState<TMDBItem[]>([]);
+  const [searching, setSearching] = useState(false);
+
   useEffect(() => {
     if (!isTauri) {
-      // Web mode: cannot fetch TMDB HTML due to X-Frame-Options
-      // Just show a message and open in new tab
-      setLoading(false);
+      // Web mode: load TMDB browse list via API
+      fetchTmdbPage(url)
+        .then(items => { setBrowseItems(items); setLoading(false); })
+        .catch(() => { setError("無法載入 TMDB 資料"); setLoading(false); });
       return;
     }
 
+    // Tauri mode: fetch rendered TMDB HTML via Rust backend
     const fetchHtml = async () => {
       setLoading(true);
       setError("");
       try {
         const { invoke: inv } = await import("@tauri-apps/api/core");
         const rawHtml = await inv<string>("fetch_tmdb_html", { url });
-        
+
         const parser = new DOMParser();
         const doc = parser.parseFromString(rawHtml, "text/html");
 
@@ -80,15 +107,14 @@ export default function TmdbEmbed({ url, onPlay, onClose }: TmdbEmbedProps) {
     fetchHtml();
   }, [url]);
 
+  // Tauri: intercept iframe navigation
   useEffect(() => {
     const handleMessage = async (event: MessageEvent) => {
       if (event.data && event.data.type === "TMDB_NAVIGATE") {
         const { mediaType, id } = event.data;
-        console.log("Intercepted navigation to:", mediaType, id);
         setLoading(true);
         try {
           const details = await getDetails(id, mediaType);
-          // Set media_type property just in case Player/etc expects it
           details.media_type = mediaType === "tv" ? "tv" : "movie";
           onPlay(details);
         } catch (err) {
@@ -98,10 +124,36 @@ export default function TmdbEmbed({ url, onPlay, onClose }: TmdbEmbedProps) {
         }
       }
     };
-
     window.addEventListener("message", handleMessage);
     return () => window.removeEventListener("message", handleMessage);
   }, [onPlay]);
+
+  // Web mode: search
+  useEffect(() => {
+    if (!searchQuery.trim()) { setSearchResults([]); return; }
+    setSearching(true);
+    searchMulti(searchQuery).then(results => {
+      setSearchResults(results.filter((item: any) =>
+        item.media_type !== "person" && (item.poster_path || item.backdrop_path)
+      ));
+      setSearching(false);
+    });
+  }, [searchQuery]);
+
+  const handleWebItemClick = async (item: TMDBItem) => {
+    const mediaType = (item as any).media_type || (url.includes("/tv") ? "tv" : "movie");
+    setLoading(true);
+    try {
+      const details = await getDetails(item.id, mediaType as "movie" | "tv");
+      details.media_type = mediaType;
+      onPlay(details);
+    } catch {
+      alert("無法取得詳細資訊。");
+      setLoading(false);
+    }
+  };
+
+  const displayItems = searchQuery ? searchResults : browseItems;
 
   return (
     <div className="absolute inset-0 z-40 bg-[#0a0a0a] flex flex-col pt-16">
@@ -115,12 +167,12 @@ export default function TmdbEmbed({ url, onPlay, onClose }: TmdbEmbedProps) {
           返回主畫面
         </button>
         <span className="text-gray-400 text-sm tracking-wide hidden sm:block">
-          {isTauri ? "TMDB 探索模式 - 點擊影片將直接開啟播放器" : "TMDB 探索"}
+          {isTauri ? "TMDB 探索模式 - 點擊影片將直接開啟播放器" : "TMDB 探索 - 點擊影片直接播放"}
         </span>
-        <div className="w-20"></div>
+        <div className="w-20" />
       </div>
 
-      <div className="flex-1 w-full h-full relative mt-1">
+      <div className="flex-1 w-full h-full relative mt-1 overflow-hidden">
         {loading && (
           <div className="absolute inset-0 bg-[#0a0a0a]/80 backdrop-blur-sm flex flex-col items-center justify-center z-50 text-primary gap-4">
             <Loader2 className="animate-spin" size={48} />
@@ -128,30 +180,7 @@ export default function TmdbEmbed({ url, onPlay, onClose }: TmdbEmbedProps) {
           </div>
         )}
 
-        {/* Web mode: cannot embed TMDB due to X-Frame-Options */}
-        {!isTauri && !loading && (
-          <div className="absolute inset-0 flex flex-col items-center justify-center gap-6 text-center px-8">
-            <div className="w-20 h-20 rounded-full bg-primary/10 flex items-center justify-center">
-              <ExternalLink size={36} className="text-primary" />
-            </div>
-            <h2 className="text-2xl font-bold text-white">在瀏覽器中開啟 TMDB</h2>
-            <p className="text-gray-400 max-w-sm leading-relaxed">
-              網頁版無法嵌入 TMDB 頁面（受 TMDB 安全政策限制），請點擊下方按鈕在新視窗中開啟瀏覽。
-            </p>
-            <a
-              href={url}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="flex items-center gap-2 bg-primary hover:bg-blue-600 text-white px-8 py-3 rounded-full font-bold transition-colors shadow-lg shadow-primary/30"
-            >
-              <ExternalLink size={18} />
-              開啟 TMDB 網站
-            </a>
-            <p className="text-gray-600 text-sm">桌面版 App 支援直接嵌入瀏覽並攔截播放</p>
-          </div>
-        )}
-
-        {/* Tauri mode: embed HTML */}
+        {/* ── Tauri mode: embed raw TMDB HTML ── */}
         {isTauri && error && (
           <div className="absolute inset-0 flex flex-col items-center justify-center text-red-500 gap-4">
             <p className="text-lg font-semibold">{error}</p>
@@ -163,13 +192,87 @@ export default function TmdbEmbed({ url, onPlay, onClose }: TmdbEmbedProps) {
             </button>
           </div>
         )}
-
         {isTauri && !error && html && (
           <iframe
             srcDoc={html}
             className="w-full h-full border-none bg-white"
             sandbox="allow-scripts allow-same-origin"
-          ></iframe>
+          />
+        )}
+
+        {/* ── Web mode: TMDB browse grid (same experience, via API) ── */}
+        {!isTauri && !loading && (
+          <div className="h-full overflow-y-auto">
+            {/* Search bar */}
+            <div className="sticky top-0 z-20 px-6 py-4 bg-[#0a0a0a]/90 backdrop-blur-md border-b border-white/5">
+              <input
+                type="text"
+                placeholder="搜尋影片或影集..."
+                value={searchQuery}
+                onChange={e => setSearchQuery(e.target.value)}
+                className="w-full max-w-lg bg-gray-900 border border-gray-700 rounded-full px-5 py-2.5 text-sm text-white focus:outline-none focus:border-primary transition-colors"
+              />
+            </div>
+
+            {error && (
+              <div className="p-8 text-center text-red-400">{error}</div>
+            )}
+
+            {searching && (
+              <div className="p-8 text-center text-gray-500">搜尋中...</div>
+            )}
+
+            {!searching && (
+              <div className="p-6">
+                <h2 className="text-lg font-bold text-white mb-4">
+                  {searchQuery
+                    ? `「${searchQuery}」的搜尋結果`
+                    : url.includes("/tv") ? "熱播影集" : "熱門電影"
+                  }
+                </h2>
+                <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-4">
+                  {displayItems.map(item => (
+                    <div
+                      key={item.id}
+                      onClick={() => handleWebItemClick(item)}
+                      className="group relative rounded-xl overflow-hidden cursor-pointer transition-transform duration-300 hover:scale-105 hover:z-10 shadow-xl"
+                    >
+                      <div className="aspect-[2/3] w-full bg-gray-800 relative">
+                        <img
+                          src={getImageUrl(item.poster_path, "w342")}
+                          alt={item.title || item.name}
+                          className="w-full h-full object-cover"
+                          loading="lazy"
+                        />
+                        {/* Hover overlay */}
+                        <div className="absolute inset-0 bg-gradient-to-t from-black/90 via-black/40 to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-300 flex flex-col justify-end p-3">
+                          <button className="w-10 h-10 bg-primary rounded-full flex items-center justify-center text-white mb-2 hover:scale-110 transition-transform self-center shadow-lg shadow-primary/30">
+                            <Play fill="currentColor" size={18} className="ml-0.5" />
+                          </button>
+                          <p className="font-bold text-white text-xs leading-tight truncate mb-1">
+                            {item.title || item.name}
+                          </p>
+                          <div className="flex items-center gap-2 text-[10px] text-gray-300">
+                            <span className="flex items-center gap-0.5">
+                              <Star size={10} className="text-yellow-500" fill="currentColor" />
+                              {item.vote_average.toFixed(1)}
+                            </span>
+                            <span className="flex items-center gap-0.5">
+                              <Calendar size={10} />
+                              {(item.release_date || item.first_air_date || "").substring(0, 4)}
+                            </span>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                  {displayItems.length === 0 && !searching && searchQuery && (
+                    <p className="text-gray-500 col-span-full py-8 text-center">沒有找到相關結果。</p>
+                  )}
+                </div>
+              </div>
+            )}
+          </div>
         )}
       </div>
     </div>
